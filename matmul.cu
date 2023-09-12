@@ -51,13 +51,15 @@ bool areMatricesEqual(float* d_A, float* d_B, int rows, int cols) {
 }
 
 // 每个thread block内线程为BLOCKSIZE * BLOCKSIZE
-#define BLOCK_SIZE 16
+#define BLOCK_SIZE_M 16
+#define BLOCK_SIZE_N 16
+#define BLOCK_SIZE_K 32
 
 template <int M, int N, int K>
 __global__ void MatMulKernel(float* A, float* B, float* C) {
   float value = 0.0;
-  int row = blockIdx.y * BLOCK_SIZE + threadIdx.y;
-  int col = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+  int row = blockIdx.y * BLOCK_SIZE_M + threadIdx.y;
+  int col = blockIdx.x * BLOCK_SIZE_N + threadIdx.x;
   for (int i = 0; i < K; ++i) {
     value += A[row * K + i] * B[i * N + col];
   }
@@ -67,15 +69,15 @@ __global__ void MatMulKernel(float* A, float* B, float* C) {
 template <int M, int N, int K>
 __global__ void MatMulKernel_sharedMemory(float* A, float* B, float* C) {
   float value = 0.0;
-  int row_block_start = blockIdx.y * BLOCK_SIZE;
-  int col_block_start = blockIdx.x * BLOCK_SIZE;
-  for (int i = 0; i < K / BLOCK_SIZE; ++i) {
-    __shared__ float asub[BLOCK_SIZE][BLOCK_SIZE];
-    __shared__ float bsub[BLOCK_SIZE][BLOCK_SIZE];
-    asub[threadIdx.y][threadIdx.x] = A[(row_block_start + threadIdx.y) * K + i * BLOCK_SIZE + threadIdx.x];
-    bsub[threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE + threadIdx.y) * N + col_block_start + threadIdx.x];
+  int row_block_start = blockIdx.y * BLOCK_SIZE_M;
+  int col_block_start = blockIdx.x * BLOCK_SIZE_N;
+  for (int i = 0; i < K / BLOCK_SIZE_K; ++i) {
+    __shared__ float asub[BLOCK_SIZE_M][BLOCK_SIZE_K];
+    __shared__ float bsub[BLOCK_SIZE_K][BLOCK_SIZE_N];
+    asub[threadIdx.y][threadIdx.x] = A[(row_block_start + threadIdx.y) * K + i * BLOCK_SIZE_M + threadIdx.x];
+    bsub[threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE_K + threadIdx.y) * N + col_block_start + threadIdx.x];
     __syncthreads();
-    for (int j = 0; j < BLOCK_SIZE; ++j) {
+    for (int j = 0; j < BLOCK_SIZE_K; ++j) {
       value += asub[threadIdx.y][j] * bsub[j][threadIdx.x];
     }
     __syncthreads();
@@ -153,8 +155,8 @@ float testMatMul(Strategy st, bool checkResult) {
     break;
 
   } case VANILLA: {
-    dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 dimGrid(N / BLOCK_SIZE, M / BLOCK_SIZE);
+    dim3 dimBlock(BLOCK_SIZE_N, BLOCK_SIZE_M);
+    dim3 dimGrid(N / BLOCK_SIZE_N, M / BLOCK_SIZE_M);
     CUDA_CALL(cudaEventRecord(start));
     CUDA_KERNEL(MatMulKernel, dimGrid, dimBlock, d_A, d_B, d_C);
     CUDA_CALL(cudaDeviceSynchronize());
@@ -162,8 +164,8 @@ float testMatMul(Strategy st, bool checkResult) {
     CUDA_CALL(cudaEventSynchronize(stop));
     break;
   } case SHAREDMEMORY: {
-    dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 dimGrid((N + BLOCK_SIZE - 1) / BLOCK_SIZE, (M + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    dim3 dimBlock(BLOCK_SIZE_N, BLOCK_SIZE_M);
+    dim3 dimGrid(N / BLOCK_SIZE_N, M / BLOCK_SIZE_M);
     CUDA_CALL(cudaEventRecord(start));
     CUDA_KERNEL(MatMulKernel_sharedMemory, dimGrid, dimBlock, d_A, d_B, d_C);
     CUDA_CALL(cudaDeviceSynchronize());
@@ -240,8 +242,8 @@ const char* strategyToString(Strategy st) {
 
 int main() {
   constexpr int times = 100;
-  constexpr Strategy st = SHAREDMEMORY;
-  constexpr int M = 3840, K = 2160, N = 3840;
+  constexpr Strategy st = VANILLA;
+  constexpr int M = 3840, K = 2880, N = 3840;
   constexpr bool checkResult = true;
   float accMillis = 0.0;
   for (int i = 0; i <  times; ++i) {
@@ -250,5 +252,5 @@ int main() {
       printf("Testing process: %d / %d\n", (i + 1), times);
     }
   }
-  printf("M=%d, K=%d, N=%d, strategy=%s, MatMul: Totally elapsed time in GPU was %.2f ms, %.2f ms per operation\n", M, K, N, strategyToString(st), accMillis, accMillis / times);
+  printf("M=%d, K=%d, N=%d, strategy=%s, bs_m=%d, bs_n=%d, bs_k=%d, MatMul: Totally elapsed time in GPU was %.2f ms, %.2f ms per operation\n", M, K, N, strategyToString(st), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, accMillis, accMillis / times);
 }
