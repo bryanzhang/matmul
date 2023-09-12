@@ -51,9 +51,32 @@ bool areMatricesEqual(float* d_A, float* d_B, int rows, int cols) {
 }
 
 // 每个thread block内线程为BLOCKSIZE * BLOCKSIZE
-#define BLOCK_SIZE_M 16
-#define BLOCK_SIZE_N 16
+#define BLOCK_SIZE_M 32
+#define BLOCK_SIZE_N 32
 #define BLOCK_SIZE_K 32
+
+template <int M, int N, int K>
+__global__ void MatMulKernel_sharedMemory(float* A, float* B, float* C) {
+  float value = 0.0;
+  int row_block_start = blockIdx.y * BLOCK_SIZE_M;
+  int col_block_start = blockIdx.x * BLOCK_SIZE_N;
+  for (int i = 0; i < K / BLOCK_SIZE_K; ++i) {
+    __shared__ float asub[BLOCK_SIZE_M][BLOCK_SIZE_K];
+    __shared__ float bsub[BLOCK_SIZE_K][BLOCK_SIZE_N];
+    for (int j = 0; j < BLOCK_SIZE_K / BLOCK_SIZE_N; ++j) {
+      asub[threadIdx.y][j * BLOCK_SIZE_N + threadIdx.x] = A[(row_block_start + threadIdx.y) * K + i * BLOCK_SIZE_K + j * BLOCK_SIZE_N + threadIdx.x];
+    }
+    for (int j = 0; j < BLOCK_SIZE_K / BLOCK_SIZE_M; ++j) {
+      bsub[j * BLOCK_SIZE_M + threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE_K + j * BLOCK_SIZE_M + threadIdx.y) * N + col_block_start + threadIdx.x];
+    }
+    __syncthreads();
+    for (int j = 0; j < BLOCK_SIZE_K; ++j) {
+      value += asub[threadIdx.y][j] * bsub[j][threadIdx.x];
+    }
+    __syncthreads();
+  }
+  C[(row_block_start + threadIdx.y) * N + (col_block_start + threadIdx.x)] = value;
+}
 
 template <int M, int N, int K>
 __global__ void MatMulKernel(float* A, float* B, float* C) {
@@ -65,26 +88,6 @@ __global__ void MatMulKernel(float* A, float* B, float* C) {
   }
   C[row * N + col] = value;
 }
-
-template <int M, int N, int K>
-__global__ void MatMulKernel_sharedMemory(float* A, float* B, float* C) {
-  float value = 0.0;
-  int row_block_start = blockIdx.y * BLOCK_SIZE_M;
-  int col_block_start = blockIdx.x * BLOCK_SIZE_N;
-  for (int i = 0; i < K / BLOCK_SIZE_K; ++i) {
-    __shared__ float asub[BLOCK_SIZE_M][BLOCK_SIZE_K];
-    __shared__ float bsub[BLOCK_SIZE_K][BLOCK_SIZE_N];
-    asub[threadIdx.y][threadIdx.x] = A[(row_block_start + threadIdx.y) * K + i * BLOCK_SIZE_M + threadIdx.x];
-    bsub[threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE_K + threadIdx.y) * N + col_block_start + threadIdx.x];
-    __syncthreads();
-    for (int j = 0; j < BLOCK_SIZE_K; ++j) {
-      value += asub[threadIdx.y][j] * bsub[j][threadIdx.x];
-    }
-    __syncthreads();
-  }
-  C[(row_block_start + threadIdx.y) * N + (col_block_start + threadIdx.x)] = value;
-}
-
 
 enum Strategy {
   CUBLAS,
@@ -241,8 +244,19 @@ const char* strategyToString(Strategy st) {
 }
 
 int main() {
+  cudaDeviceProp prop;
+  int count;
+  cudaGetDeviceCount(&count);
+  for (int i = 0; i < count; i++) {
+    cudaGetDeviceProperties(&prop, i);
+    std::cout << "Device " << i << ":\n";
+    std::cout << "Maximum threads per block: " << prop.maxThreadsPerBlock << "\n";
+    std::cout << "Maximum dimension size of a thread block: (" << prop.maxThreadsDim[0] << ", " << prop.maxThreadsDim[1] << ", " << prop.maxThreadsDim[2] << ")\n";
+    std::cout << "Maximum dimension size of a grid size: (" << prop.maxGridSize[0] << ", " << prop.maxGridSize[1] << ", " << prop.maxGridSize[2] << ")\n";
+  }
+
   constexpr int times = 100;
-  constexpr Strategy st = VANILLA;
+  constexpr Strategy st = SHAREDMEMORY;
   constexpr int M = 3840, K = 2880, N = 3840;
   constexpr bool checkResult = true;
   float accMillis = 0.0;

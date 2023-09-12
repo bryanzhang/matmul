@@ -1,3 +1,3 @@
 #! /bin/bash
 
-nvcc -lcublas matmul.cu -o matmul -g
+nvcc -lcublas matmul.cu -o matmul -g -O3
