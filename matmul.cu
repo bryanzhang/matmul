@@ -4,6 +4,7 @@
 
 #include <thrust/device_vector.h>
 #include <cmath>
+#include <cuda_profiler_api.h>
 
 #define CUDA_KERNEL(kernel, grid, block, args...) \
     do {\
@@ -95,7 +96,7 @@ enum Strategy {
   SHAREDMEMORY,
 };
 
-template <int M, int K, int N>
+template <int M, int K, int N, bool enableProfiler>
 float testMatMul(Strategy st, bool checkResult) {
   float* h_A, *h_B, *h_C;
   float* d_A, *d_B, *d_C;
@@ -135,6 +136,9 @@ float testMatMul(Strategy st, bool checkResult) {
     float alpha = 1.0f;
     float beta = 0.0f;
     CUDA_CALL(cudaEventRecord(start));
+    if (enableProfiler) {
+      cudaProfilerStart();
+    }
     cublasSgemm(
 	handle,
        	CUBLAS_OP_N,
@@ -151,6 +155,9 @@ float testMatMul(Strategy st, bool checkResult) {
        	d_C,
        	N
     );
+    if (enableProfiler) {
+      cudaProfilerStop();
+    }
     CUDA_CALL(cudaDeviceSynchronize());
     CUDA_CALL(cudaEventRecord(stop));
     CUDA_CALL(cudaEventSynchronize(stop));
@@ -161,8 +168,14 @@ float testMatMul(Strategy st, bool checkResult) {
     dim3 dimBlock(BLOCK_SIZE_N, BLOCK_SIZE_M);
     dim3 dimGrid(N / BLOCK_SIZE_N, M / BLOCK_SIZE_M);
     CUDA_CALL(cudaEventRecord(start));
+    if (enableProfiler) {
+      cudaProfilerStart();
+    }
     CUDA_KERNEL(MatMulKernel, dimGrid, dimBlock, d_A, d_B, d_C);
     CUDA_CALL(cudaDeviceSynchronize());
+    if (enableProfiler) {
+      cudaProfilerStop();
+    }
     CUDA_CALL(cudaEventRecord(stop));
     CUDA_CALL(cudaEventSynchronize(stop));
     break;
@@ -170,8 +183,14 @@ float testMatMul(Strategy st, bool checkResult) {
     dim3 dimBlock(BLOCK_SIZE_N, BLOCK_SIZE_M);
     dim3 dimGrid(N / BLOCK_SIZE_N, M / BLOCK_SIZE_M);
     CUDA_CALL(cudaEventRecord(start));
+    if (enableProfiler) {
+      cudaProfilerStart();
+    }
     CUDA_KERNEL(MatMulKernel_sharedMemory, dimGrid, dimBlock, d_A, d_B, d_C);
     CUDA_CALL(cudaDeviceSynchronize());
+    if (enableProfiler) {
+      cudaProfilerStop();
+    }
     CUDA_CALL(cudaEventRecord(stop));
     CUDA_CALL(cudaEventSynchronize(stop));
     break;
@@ -258,13 +277,14 @@ int main() {
   constexpr int times = 100;
   constexpr Strategy st = SHAREDMEMORY;
   constexpr int M = 3840, K = 2880, N = 3840;
-  constexpr bool checkResult = true;
+  constexpr bool checkResult = true, enableProfiler = false;
   float accMillis = 0.0;
   for (int i = 0; i <  times; ++i) {
-    accMillis += testMatMul<M, K, N>(st, checkResult);
+    accMillis += testMatMul<M, K, N, enableProfiler>(st, checkResult);
     if (((i + 1) % 10) == 0) {
       printf("Testing process: %d / %d\n", (i + 1), times);
     }
   }
-  printf("M=%d, K=%d, N=%d, strategy=%s, bs_m=%d, bs_n=%d, bs_k=%d, MatMul: Totally elapsed time in GPU was %.2f ms, %.2f ms per operation\n", M, K, N, strategyToString(st), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, accMillis, accMillis / times);
+  printf("M=%d, K=%d, N=%d, strategy=%s, bs_m=%d, bs_n=%d, bs_k=%d, enableProfiler=%d, MatMul: Totally elapsed time in GPU was %.2f ms, %.2f ms per operation\n",
+		  M, K, N, strategyToString(st), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, enableProfiler ? 1: 0, accMillis, accMillis / times);
 }
