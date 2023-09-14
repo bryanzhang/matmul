@@ -100,17 +100,22 @@ __global__ void MatMulKernel_reduceBankConflicts(float* A, float* B, float* C) {
       bsub[j * BLOCK_SIZE_M + threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE_K + j * BLOCK_SIZE_M + threadIdx.y) * N + col_block_start + threadIdx.x];
     }
     __syncthreads();
-    for (int j = 0; j < BLOCK_SIZE_K; j += 8) {
-      float a1 = asub[threadIdx.y][j], a2 = asub[threadIdx.y][j + 1], a3 = asub[threadIdx.y][j + 2], a4 = asub[threadIdx.y][j + 3], a5 = asub[threadIdx.y][j + 4], a6 = asub[threadIdx.y][j + 5], a7 = asub[threadIdx.y][j + 6], a8 = asub[threadIdx.y][j + 7];
+    int end = (8 * threadIdx.x + BLOCK_SIZE_K);
+    for (int k = 8 * threadIdx.x; k < end; k += 8) {
+      int j = (k % BLOCK_SIZE_K);
+      float4* p = (float4*)&asub[threadIdx.y][j];
+      float4 fp4_1 = *p;
+      ++p;
+      float4 fp4_2 = *p;
       float b1 = bsub[j][threadIdx.x], b2 = bsub[j + 1][threadIdx.x], b3 = bsub[j + 2][threadIdx.x], b4 = bsub[j + 3][threadIdx.x], b5 = bsub[j + 4][threadIdx.x], b6 = bsub[j + 5][threadIdx.x], b7 = bsub[j + 6][threadIdx.x], b8 = bsub[j + 7][threadIdx.x];
-      value += a1 * b1;
-      value += a2 * b2;
-      value += a3 * b3;
-      value += a4 * b4;
-      value += a5 * b5;
-      value += a6 * b6;
-      value += a7 * b7;
-      value += a8 * b8;
+      value += fp4_1.x * b1;
+      value += fp4_1.y * b2;
+      value += fp4_1.z * b3;
+      value += fp4_1.w * b4;
+      value += fp4_2.x * b5;
+      value += fp4_2.y * b6;
+      value += fp4_2.z * b7;
+      value += fp4_2.w * b8;
     }
     __syncthreads();
   }
