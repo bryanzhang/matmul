@@ -1,6 +1,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <cstdlib>
 
 #include <thrust/device_vector.h>
 #include <cmath>
@@ -62,6 +63,9 @@ bool areMatricesEqual(float* d_A, float* d_B, int rows, int cols) {
 #define BLOCK_SIZE_N 32
 #define BLOCK_SIZE_K 32
 
+#define VLX 32
+#define VLY 32
+
 template <int M, int N, int K>
 __global__ void MatMulKernel_sharedMemory(float* A, float* B, float* C) {
   float value = 0.0;
@@ -93,11 +97,21 @@ __global__ void MatMulKernel_reduceBankConflicts(float* A, float* B, float* C) {
   for (int i = 0; i < K / BLOCK_SIZE_K; ++i) {
     __shared__ float asub[BLOCK_SIZE_M][BLOCK_SIZE_K];
     __shared__ float bsub[BLOCK_SIZE_K][BLOCK_SIZE_N];
-    for (int j = 0; j < BLOCK_SIZE_K / BLOCK_SIZE_N; ++j) {
-      asub[threadIdx.y][j * BLOCK_SIZE_N + threadIdx.x] = A[(row_block_start + threadIdx.y) * K + i * BLOCK_SIZE_K + j * BLOCK_SIZE_N + threadIdx.x];
+    int endj = (threadIdx.y + 1) * BLOCK_SIZE_M / VLY;
+    int endk = (threadIdx.x + 1) * BLOCK_SIZE_K / VLX;
+    int startk = threadIdx.x * BLOCK_SIZE_K / VLX;
+    for (int j = threadIdx.y * BLOCK_SIZE_M / VLY; j < endj; ++j) {
+      for (int k = startk; k < endk; ++k) {
+        asub[j][k] = A[(row_block_start + j) * K + i * BLOCK_SIZE_K + k];
+      }
     }
-    for (int j = 0; j < BLOCK_SIZE_K / BLOCK_SIZE_M; ++j) {
-      bsub[j * BLOCK_SIZE_M + threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE_K + j * BLOCK_SIZE_M + threadIdx.y) * N + col_block_start + threadIdx.x];
+    endj = (threadIdx.y + 1) * BLOCK_SIZE_K / VLY;
+    endk = (threadIdx.x + 1) * BLOCK_SIZE_N / VLX;
+    startk = threadIdx.x * BLOCK_SIZE_N / VLX;
+    for (int j = threadIdx.y * BLOCK_SIZE_K / VLY; j < endj; ++j) {
+      for (int k = startk; k < endk; ++k) {
+        bsub[j][k] = B[(i * BLOCK_SIZE_K + j) * N + col_block_start + k];
+      }
     }
     __syncthreads();
     int end = (8 * threadIdx.x + BLOCK_SIZE_K);
@@ -239,8 +253,8 @@ float testMatMul(Strategy st, bool checkResult) {
     CUDA_CALL(cudaEventSynchronize(stop));
     break;
   } case REDUCE_BANK_CONFLICTS: {
-    dim3 dimBlock(BLOCK_SIZE_N, BLOCK_SIZE_M);
-    dim3 dimGrid(N / BLOCK_SIZE_N, M / BLOCK_SIZE_M);
+    dim3 dimBlock(VLX, VLY);
+    dim3 dimGrid(N / VLX, M / VLY);
     CUDA_CALL(cudaEventRecord(start));
     if (enableProfiler) {
       cudaProfilerStart();
