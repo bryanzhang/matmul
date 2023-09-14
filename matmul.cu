@@ -27,12 +27,18 @@
 
 #define EPSILON 1e-6
 
+struct approx_equal {
+  __host__ __device__ bool operator()(float x, float y) {
+    return std::abs(x - y) < EPSILON;
+  }
+};
+
 bool areMatricesEqual(float* d_A, float* d_B, int rows, int cols) {
     thrust::device_ptr<float> dev_ptr_A = thrust::device_pointer_cast(d_A);
     thrust::device_ptr<float> dev_ptr_B = thrust::device_pointer_cast(d_B);
 
     // 使用Thrust的equal函数来判断两个矩阵是否相等
-    if (!thrust::equal(dev_ptr_A, dev_ptr_A + rows * cols, dev_ptr_B)) {
+    if (!thrust::equal(dev_ptr_A, dev_ptr_A + rows * cols, dev_ptr_B, approx_equal())) {
         return false;
     }
 
@@ -229,6 +235,7 @@ float testMatMul(Strategy st, bool checkResult) {
     // cudaMemcpy(h_C, d_C, M * N * sizeof(float), cudaMemcpyDeviceToHost);
     // float* h_D = (float*)malloc(M * N * sizeof(float));
     // cudaMemcpy(h_D, d_D, M * N * sizeof(float), cudaMemcpyDeviceToHost);
+    // printf("%.6f,%.6f\n", h_C[8701], h_D[8701]);
     // free(h_D);
     if (!areMatricesEqual(d_C, d_D, M, N)) {
       printf("WARNING: the result is not correct!\n");
