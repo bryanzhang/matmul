@@ -86,6 +86,38 @@ __global__ void MatMulKernel_sharedMemory(float* A, float* B, float* C) {
 }
 
 template <int M, int N, int K>
+__global__ void MatMulKernel_reduceBankConflicts(float* A, float* B, float* C) {
+  float value = 0.0;
+  int row_block_start = blockIdx.y * BLOCK_SIZE_M;
+  int col_block_start = blockIdx.x * BLOCK_SIZE_N;
+  for (int i = 0; i < K / BLOCK_SIZE_K; ++i) {
+    __shared__ float asub[BLOCK_SIZE_M][BLOCK_SIZE_K];
+    __shared__ float bsub[BLOCK_SIZE_K][BLOCK_SIZE_N];
+    for (int j = 0; j < BLOCK_SIZE_K / BLOCK_SIZE_N; ++j) {
+      asub[threadIdx.y][j * BLOCK_SIZE_N + threadIdx.x] = A[(row_block_start + threadIdx.y) * K + i * BLOCK_SIZE_K + j * BLOCK_SIZE_N + threadIdx.x];
+    }
+    for (int j = 0; j < BLOCK_SIZE_K / BLOCK_SIZE_M; ++j) {
+      bsub[j * BLOCK_SIZE_M + threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE_K + j * BLOCK_SIZE_M + threadIdx.y) * N + col_block_start + threadIdx.x];
+    }
+    __syncthreads();
+    for (int j = 0; j < BLOCK_SIZE_K; j += 8) {
+      float a1 = asub[threadIdx.y][j], a2 = asub[threadIdx.y][j + 1], a3 = asub[threadIdx.y][j + 2], a4 = asub[threadIdx.y][j + 3], a5 = asub[threadIdx.y][j + 4], a6 = asub[threadIdx.y][j + 5], a7 = asub[threadIdx.y][j + 6], a8 = asub[threadIdx.y][j + 7];
+      float b1 = bsub[j][threadIdx.x], b2 = bsub[j + 1][threadIdx.x], b3 = bsub[j + 2][threadIdx.x], b4 = bsub[j + 3][threadIdx.x], b5 = bsub[j + 4][threadIdx.x], b6 = bsub[j + 5][threadIdx.x], b7 = bsub[j + 6][threadIdx.x], b8 = bsub[j + 7][threadIdx.x];
+      value += a1 * b1;
+      value += a2 * b2;
+      value += a3 * b3;
+      value += a4 * b4;
+      value += a5 * b5;
+      value += a6 * b6;
+      value += a7 * b7;
+      value += a8 * b8;
+    }
+    __syncthreads();
+  }
+  C[(row_block_start + threadIdx.y) * N + (col_block_start + threadIdx.x)] = value;
+}
+
+template <int M, int N, int K>
 __global__ void MatMulKernel(float* A, float* B, float* C) {
   float value = 0.0;
   int row = blockIdx.y * BLOCK_SIZE_M + threadIdx.y;
@@ -99,7 +131,8 @@ __global__ void MatMulKernel(float* A, float* B, float* C) {
 enum Strategy {
   CUBLAS,
   VANILLA,
-  SHAREDMEMORY,
+  SHARED_MEMORY,
+  REDUCE_BANK_CONFLICTS,
 };
 
 template <int M, int K, int N, bool enableProfiler>
@@ -185,7 +218,7 @@ float testMatMul(Strategy st, bool checkResult) {
     CUDA_CALL(cudaEventRecord(stop));
     CUDA_CALL(cudaEventSynchronize(stop));
     break;
-  } case SHAREDMEMORY: {
+  } case SHARED_MEMORY: {
     dim3 dimBlock(BLOCK_SIZE_N, BLOCK_SIZE_M);
     dim3 dimGrid(N / BLOCK_SIZE_N, M / BLOCK_SIZE_M);
     CUDA_CALL(cudaEventRecord(start));
@@ -193,6 +226,21 @@ float testMatMul(Strategy st, bool checkResult) {
       cudaProfilerStart();
     }
     CUDA_KERNEL(MatMulKernel_sharedMemory, dimGrid, dimBlock, d_A, d_B, d_C);
+    CUDA_CALL(cudaDeviceSynchronize());
+    if (enableProfiler) {
+      cudaProfilerStop();
+    }
+    CUDA_CALL(cudaEventRecord(stop));
+    CUDA_CALL(cudaEventSynchronize(stop));
+    break;
+  } case REDUCE_BANK_CONFLICTS: {
+    dim3 dimBlock(BLOCK_SIZE_N, BLOCK_SIZE_M);
+    dim3 dimGrid(N / BLOCK_SIZE_N, M / BLOCK_SIZE_M);
+    CUDA_CALL(cudaEventRecord(start));
+    if (enableProfiler) {
+      cudaProfilerStart();
+    }
+    CUDA_KERNEL(MatMulKernel_reduceBankConflicts, dimGrid, dimBlock, d_A, d_B, d_C);
     CUDA_CALL(cudaDeviceSynchronize());
     if (enableProfiler) {
       cudaProfilerStop();
@@ -262,8 +310,10 @@ const char* strategyToString(Strategy st) {
       return "CUBLAS";
     case VANILLA:
       return "VANILLA";
-    case SHAREDMEMORY:
-      return "SHAREDMEMORY";
+    case SHARED_MEMORY:
+      return "SHARED_MEMORY";
+    case REDUCE_BANK_CONFLICTS:
+      return "REDUCE_BANK_CONFLICTS";
     default:
       return "Unknown";
   }
@@ -282,9 +332,9 @@ int main() {
   }
 
   constexpr int times = 100;
-  constexpr Strategy st = SHAREDMEMORY;
+  constexpr Strategy st = REDUCE_BANK_CONFLICTS;
   constexpr int M = 3840, K = 2880, N = 3840;
-  constexpr bool checkResult = true, enableProfiler = false;
+  constexpr bool checkResult = false, enableProfiler = false;
   float accMillis = 0.0;
   for (int i = 0; i <  times; ++i) {
     accMillis += testMatMul<M, K, N, enableProfiler>(st, checkResult);
@@ -295,3 +345,4 @@ int main() {
   printf("M=%d, K=%d, N=%d, strategy=%s, bs_m=%d, bs_n=%d, bs_k=%d, enableProfiler=%d, MatMul: Totally elapsed time in GPU was %.2f ms, %.2f ms per operation\n",
 		  M, K, N, strategyToString(st), BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, enableProfiler ? 1: 0, accMillis, accMillis / times);
 }
+
